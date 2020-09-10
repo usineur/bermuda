@@ -8,6 +8,7 @@
 #include <emscripten.h>
 #endif
 #include "mixer.h"
+#include "scaler.h"
 #include "screenshot.h"
 #include "systemstub.h"
 
@@ -15,6 +16,7 @@ enum {
 	kSoundSampleRate = 22050,
 	kSoundSampleSize = 4096,
 	kVideoSurfaceDepth = 32,
+	kJoystickCommitValue = 16384,
 };
 
 #ifdef __vita__
@@ -39,6 +41,8 @@ struct SystemStub_SDL : SystemStub {
 	SDL_Renderer *_renderer;
 	SDL_Texture *_gameTexture;
 	SDL_Texture *_videoTexture;
+	SDL_Texture *_backgroundTexture;
+	SDL_GameController *_controller;
 #else
 	SDL_Surface *_screen;
 	SDL_Overlay *_yuv;
@@ -49,18 +53,20 @@ struct SystemStub_SDL : SystemStub {
 	uint32_t _pal[256];
 	int _screenW, _screenH;
 	int _videoW, _videoH;
+	int _widescreenW, _widescreenH;
 	bool _fullScreenDisplay;
 	int _soundSampleRate;
 	const uint8_t *_iconData;
 	int _iconSize;
 	int _screenshot;
+	bool _widescreen;
 #ifdef __vita__
 	SDL_Joystick *_joystick;
 #endif
 
 	SystemStub_SDL() :
 #if SDL_VERSION_ATLEAST(2, 0, 0)
-		_window(0), _renderer(0), _gameTexture(0), _videoTexture(0),
+		_window(0), _renderer(0), _gameTexture(0), _videoTexture(0), _backgroundTexture(0),
 #else
 		_screen(0), _yuv(0),
 #endif
@@ -68,13 +74,17 @@ struct SystemStub_SDL : SystemStub {
 		_gameBuffer(0), _videoBuffer(0),
 		_iconData(0), _iconSize(0) {
 		_screenshot = 1;
-		_mixer = Mixer_SDL_create(this);
+		if (1) {
+			_mixer = Mixer_SDL_create(this);
+		} else {
+			_mixer = Mixer_Software_create(this);
+		}
 	}
 	virtual ~SystemStub_SDL() {
 		delete _mixer;
 	}
 
-	virtual void init(const char *title, int w, int h);
+	virtual void init(const char *title, int w, int h, bool fullscreen, int screenMode);
 	virtual void destroy();
 	virtual void setIcon(const uint8_t *data, int size);
 	virtual void showCursor(bool show);
@@ -82,6 +92,8 @@ struct SystemStub_SDL : SystemStub {
 	virtual void fillRect(int x, int y, int w, int h, uint8_t color);
 	virtual void copyRect(int x, int y, int w, int h, const uint8_t *buf, int pitch, bool transparent);
 	virtual void darkenRect(int x, int y, int w, int h);
+	virtual void copyRectWidescreen(int w, int h, const uint8_t *buf, int pitch);
+	virtual void clearWidescreen();
 	virtual void updateScreen();
 	virtual void setYUV(bool flag, int w, int h);
 	virtual uint8_t *lockYUV(int *pitch);
@@ -96,6 +108,7 @@ struct SystemStub_SDL : SystemStub {
 	virtual int getOutputSampleRate();
 	virtual Mixer *getMixer() { return _mixer; }
 
+	void updateMousePosition(int x, int y);
 	void handleEvent(const SDL_Event &ev, bool &paused);
 #ifdef __vita__
 	void renderCopyVita(SDL_Renderer *renderer, SDL_Texture *texture);
@@ -115,22 +128,56 @@ static int eventHandler(void *userdata, SDL_Event *ev) {
 }
 #endif
 
-void SystemStub_SDL::init(const char *title, int w, int h) {
+void SystemStub_SDL::init(const char *title, int w, int h, bool fullscreen, int screenMode) {
+#ifdef __vita__
 	SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK);
+#else
+	SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
+#endif
 	SDL_ShowCursor(SDL_DISABLE);
 	_quit = false;
 	memset(&_pi, 0, sizeof(_pi));
 
+	_soundSampleRate = 0;
 	_mixer->open();
 
+	_widescreen = false;
+	switch (screenMode) {
+	case SCREEN_MODE_DEFAULT: {
+			SDL_DisplayMode dm;
+			if (SDL_GetDesktopDisplayMode(0, &dm) == 0) {
+				_widescreen = ((dm.w / (float)dm.h) >= (16 / 9.f));
+			}
+		}
+		break;
+	case SCREEN_MODE_4_3:
+		_widescreen = false;
+		break;
+	case SCREEN_MODE_16_9:
+		_widescreen = true;
+		break;
+	}
+
 #if SDL_VERSION_ATLEAST(2, 0, 0)
+	int windowW = w;
+	int windowH = h;
+	if (_widescreen) {
+		windowW = windowH * 16 / 9;
+		_widescreenW = windowW;
+		_widescreenH = windowH;
+	} else {
+		_widescreenW = 0;
+		_widescreenH = 0;
+	}
 #ifdef __vita__
 	// improve image quality on Vita by enabling linear filtering
 	// this is only recently supported by SDL2 for Vita since 2017/12/24
 	SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
 #endif
-
-	_window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h, 0);
+	_window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, windowW, windowH, 0);
+	if (_widescreen) {
+		SDL_GetWindowSize(_window, &_widescreenW, &_widescreenH);
+	}
 	if (_iconData) {
 		SDL_RWops *rw = SDL_RWFromConstMem(_iconData, _iconSize);
 		SDL_Surface *icon = SDL_LoadBMP_RW(rw, 1);
@@ -139,13 +186,28 @@ void SystemStub_SDL::init(const char *title, int w, int h) {
 			SDL_FreeSurface(icon);
 		}
 	}
-	SDL_GetWindowSize(_window, &_screenW, &_screenH);
 	_renderer = SDL_CreateRenderer(_window, -1, SDL_RENDERER_ACCELERATED);
-	SDL_RenderSetLogicalSize(_renderer, _screenW, _screenH);
+	if (_widescreen) {
+		SDL_RenderSetLogicalSize(_renderer, _widescreenW, _widescreenH);
+	} else {
+		SDL_RenderSetLogicalSize(_renderer, w, h);
+	}
 
 	static const uint32_t pfmt = SDL_PIXELFORMAT_RGB888; //SDL_PIXELFORMAT_RGB565;
-	_gameTexture = SDL_CreateTexture(_renderer, pfmt, SDL_TEXTUREACCESS_STREAMING, _screenW, _screenH);
 	_fmt = SDL_AllocFormat(pfmt);
+	_gameTexture = SDL_CreateTexture(_renderer, pfmt, SDL_TEXTUREACCESS_STREAMING, w, h);
+	if (_widescreen) {
+		_backgroundTexture = SDL_CreateTexture(_renderer, pfmt, SDL_TEXTUREACCESS_STREAMING, w, h);
+	}
+
+	SDL_GameControllerAddMappingsFromFile("gamecontrollerdb.txt");
+	_controller = 0;
+	for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+		if (SDL_IsGameController(i)) {
+			_controller = SDL_GameControllerOpen(i);
+			break;
+		}
+	}
 #ifdef __vita__
 	_joystick = SDL_JoystickOpen(0);
 #endif
@@ -166,8 +228,7 @@ void SystemStub_SDL::init(const char *title, int w, int h) {
 	_videoW = _videoH = 0;
 
 	_fullScreenDisplay = false;
-	setFullscreen(_fullScreenDisplay);
-	_soundSampleRate = 0;
+	setFullscreen(fullscreen);
 
 #ifdef __EMSCRIPTEN__
 	emscripten_SDL_SetEventHandler(eventHandler, this);
@@ -186,12 +247,20 @@ void SystemStub_SDL::destroy() {
 		SDL_DestroyTexture(_videoTexture);
 		_videoTexture = 0;
 	}
+	if (_backgroundTexture) {
+		SDL_DestroyTexture(_backgroundTexture);
+		_backgroundTexture = 0;
+	}
 	if (_fmt) {
 		SDL_FreeFormat(_fmt);
 		_fmt = 0;
 	}
 	SDL_DestroyRenderer(_renderer);
 	SDL_DestroyWindow(_window);
+
+	if (_controller) {
+		SDL_GameControllerClose(_controller);
+	}
 #else
 	if (_screen) {
 		// free()'d by SDL_Quit()
@@ -291,15 +360,156 @@ void SystemStub_SDL::darkenRect(int x, int y, int w, int h) {
 	}
 }
 
+static void blur_h(int radius, const uint32_t *src, int srcPitch, int w, int h, const SDL_PixelFormat *fmt, uint32_t *dst, int dstPitch) {
+
+	const int count = 2 * radius + 1;
+
+	for (int y = 0; y < h; ++y) {
+
+		uint32_t r = 0;
+		uint32_t g = 0;
+		uint32_t b = 0;
+
+		uint32_t color;
+
+		for (int x = -radius; x <= radius; ++x) {
+			color = src[MAX(x, 0)];
+			r += (color & fmt->Rmask) >> fmt->Rshift;
+			g += (color & fmt->Gmask) >> fmt->Gshift;
+			b += (color & fmt->Bmask) >> fmt->Bshift;
+		}
+		dst[0] = ((r / count) << fmt->Rshift) | ((g / count) << fmt->Gshift) | ((b / count) << fmt->Bshift);
+
+		for (int x = 1; x < w; ++x) {
+			color = src[MIN(x + radius, w - 1)];
+			r += (color & fmt->Rmask) >> fmt->Rshift;
+			g += (color & fmt->Gmask) >> fmt->Gshift;
+			b += (color & fmt->Bmask) >> fmt->Bshift;
+
+			color = src[MAX(x - radius - 1, 0)];
+			r -= (color & fmt->Rmask) >> fmt->Rshift;
+			g -= (color & fmt->Gmask) >> fmt->Gshift;
+			b -= (color & fmt->Bmask) >> fmt->Bshift;
+
+			dst[x] = ((r / count) << fmt->Rshift) | ((g / count) << fmt->Gshift) | ((b / count) << fmt->Bshift);
+		}
+
+		src += srcPitch;
+		dst += dstPitch;
+	}
+}
+
+static void blur_v(int radius, const uint32_t *src, int srcPitch, int w, int h, const SDL_PixelFormat *fmt, uint32_t *dst, int dstPitch) {
+
+	const int count = 2 * radius + 1;
+
+	for (int x = 0; x < w; ++x) {
+
+		uint32_t r = 0;
+		uint32_t g = 0;
+		uint32_t b = 0;
+
+		uint32_t color;
+
+		for (int y = -radius; y <= radius; ++y) {
+			color = src[MAX(y, 0) * srcPitch];
+			r += (color & fmt->Rmask) >> fmt->Rshift;
+			g += (color & fmt->Gmask) >> fmt->Gshift;
+			b += (color & fmt->Bmask) >> fmt->Bshift;
+		}
+		dst[0] = ((r / count) << fmt->Rshift) | ((g / count) << fmt->Gshift) | ((b / count) << fmt->Bshift);
+
+		for (int y = 1; y < h; ++y) {
+			color = src[MIN(y + radius, h - 1) * srcPitch];
+			r += (color & fmt->Rmask) >> fmt->Rshift;
+			g += (color & fmt->Gmask) >> fmt->Gshift;
+			b += (color & fmt->Bmask) >> fmt->Bshift;
+
+			color = src[MAX(y - radius - 1, 0) * srcPitch];
+			r -= (color & fmt->Rmask) >> fmt->Rshift;
+			g -= (color & fmt->Gmask) >> fmt->Gshift;
+			b -= (color & fmt->Bmask) >> fmt->Bshift;
+
+			dst[y * dstPitch] = ((r / count) << fmt->Rshift) | ((g / count) << fmt->Gshift) | ((b / count) << fmt->Bshift);
+		}
+
+		++src;
+		++dst;
+	}
+}
+
+void SystemStub_SDL::copyRectWidescreen(int w, int h, const uint8_t *buf, int bufPitch) {
+	if (_widescreen) {
+		void *ptr = 0;
+		int dstPitch = 0;
+		if (SDL_LockTexture(_backgroundTexture, 0, &ptr, &dstPitch) == 0) {
+
+			uint32_t *src = (uint32_t *)malloc(w * h * sizeof(uint32_t));
+			uint32_t *tmp = (uint32_t *)malloc(w * h * sizeof(uint32_t));
+			uint32_t *dst = (uint32_t *)ptr;
+			if (src && tmp) {
+				buf += h * bufPitch;
+				for (int y = 0; y < h; ++y) {
+					buf -= bufPitch;
+					for (int x = 0; x < w; ++x) {
+						src[y * w + x] = _pal[buf[x]];
+					}
+				}
+				static const int radius = 16;
+				blur_h(radius, src, w, w, h, _fmt, tmp, w);
+				blur_v(radius, tmp, w, w, h, _fmt, dst, dstPitch / sizeof(uint32_t));
+			}
+			free(src);
+			free(tmp);
+
+			SDL_UnlockTexture(_backgroundTexture);
+		}
+	}
+}
+
+void SystemStub_SDL::clearWidescreen() {
+	if (_widescreen) {
+		void *dst = 0;
+		int dstPitch = 0;
+		if (SDL_LockTexture(_backgroundTexture, 0, &dst, &dstPitch) == 0) {
+			assert((dstPitch & 3) == 0);
+			const uint32_t color = _pal[0]; // palette #0 is black
+			for (int y = 0; y < _screenH; ++y) {
+				for (int x = 0; x < _screenW; ++x) {
+					((uint32_t *)dst)[x] = color;
+				}
+				dst = (uint8_t *)dst + dstPitch;
+			}
+			SDL_UnlockTexture(_backgroundTexture);
+		}
+	}
+}
+
 void SystemStub_SDL::updateScreen() {
 #if SDL_VERSION_ATLEAST(2, 0, 0)
 	SDL_RenderClear(_renderer);
+	// background graphics (left/right borders)
+	if (_widescreen) {
+		SDL_RenderCopy(_renderer, _backgroundTexture, 0, 0);
+	}
+	// game graphics
 	SDL_UpdateTexture(_gameTexture, NULL, _gameBuffer, _screenW * sizeof(uint32_t));
+	SDL_Rect r;
+	r.w = _screenW;
+	r.h = _screenH;
+	if (_widescreen) {
+		r.x = (_widescreenW - r.w) / 2;
+		r.y = (_widescreenH - r.h) / 2;
+	} else {
+		r.x = 0;
+		r.y = 0;
+	}
 #ifdef __vita__
 	renderCopyVita(_renderer, _gameTexture);
 #else
-	SDL_RenderCopy(_renderer, _gameTexture, NULL, NULL);
+	SDL_RenderCopy(_renderer, _gameTexture, NULL, &r);
 #endif
+	// display
 	SDL_RenderPresent(_renderer);
 #else
 	if (SDL_LockSurface(_screen) == 0) {
@@ -439,6 +649,16 @@ void SystemStub_SDL::renderCopyVita(SDL_Renderer *renderer, SDL_Texture *texture
 }
 #endif
 
+void SystemStub_SDL::updateMousePosition(int x, int y) {
+	if (_widescreen) {
+		x -= (_widescreenW - _screenW) / 2;
+		y -= (_widescreenH - _screenH) / 2;
+	}
+	_pi.mouseX = x;
+	_pi.mouseY = y;
+}
+
+
 void SystemStub_SDL::handleEvent(const SDL_Event &ev, bool &paused) {
 	switch (ev.type) {
 #ifdef __vita__
@@ -517,6 +737,93 @@ void SystemStub_SDL::handleEvent(const SDL_Event &ev, bool &paused) {
 			paused = (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST);
 			SDL_PauseAudio(paused);
 			break;
+		}
+		break;
+	case SDL_CONTROLLERAXISMOTION:
+		if (_controller) {
+			switch (ev.caxis.axis) {
+			case SDL_CONTROLLER_AXIS_LEFTX:
+			case SDL_CONTROLLER_AXIS_RIGHTX:
+				if (ev.caxis.value < -kJoystickCommitValue) {
+					_pi.dirMask |= PlayerInput::DIR_LEFT;
+				} else {
+					_pi.dirMask &= ~PlayerInput::DIR_LEFT;
+				}
+				if (ev.caxis.value > kJoystickCommitValue) {
+					_pi.dirMask |= PlayerInput::DIR_RIGHT;
+				} else {
+					_pi.dirMask &= ~PlayerInput::DIR_RIGHT;
+				}
+				break;
+			case SDL_CONTROLLER_AXIS_LEFTY:
+			case SDL_CONTROLLER_AXIS_RIGHTY:
+				if (ev.caxis.value < -kJoystickCommitValue) {
+					_pi.dirMask |= PlayerInput::DIR_UP;
+				} else {
+					_pi.dirMask &= ~PlayerInput::DIR_UP;
+				}
+				if (ev.caxis.value > kJoystickCommitValue) {
+					_pi.dirMask |= PlayerInput::DIR_DOWN;
+				} else {
+					_pi.dirMask &= ~PlayerInput::DIR_DOWN;
+				}
+				break;
+			}
+		}
+		break;
+	case SDL_CONTROLLERBUTTONDOWN:
+	case SDL_CONTROLLERBUTTONUP:
+		if (_controller) {
+			const bool pressed = ev.cbutton.state == SDL_PRESSED;
+			switch (ev.cbutton.button) {
+			case SDL_CONTROLLER_BUTTON_A:
+				_pi.enter = pressed;
+				break;
+			case SDL_CONTROLLER_BUTTON_B:
+				_pi.space = pressed;
+				break;
+			case SDL_CONTROLLER_BUTTON_X:
+				_pi.shift = pressed;
+				break;
+			case SDL_CONTROLLER_BUTTON_Y:
+				_pi.ctrl = pressed;
+				break;
+			case SDL_CONTROLLER_BUTTON_BACK:
+				_pi.escape = pressed;
+				break;
+			case SDL_CONTROLLER_BUTTON_GUIDE:
+			case SDL_CONTROLLER_BUTTON_START:
+				_pi.tab = pressed;
+				break;
+			case SDL_CONTROLLER_BUTTON_DPAD_UP:
+				if (pressed) {
+					_pi.dirMask |= PlayerInput::DIR_UP;
+				} else {
+					_pi.dirMask &= ~PlayerInput::DIR_UP;
+				}
+				break;
+			case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+				if (pressed) {
+					_pi.dirMask |= PlayerInput::DIR_DOWN;
+				} else {
+					_pi.dirMask &= ~PlayerInput::DIR_DOWN;
+				}
+				break;
+			case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+				if (pressed) {
+					_pi.dirMask |= PlayerInput::DIR_LEFT;
+				} else {
+					_pi.dirMask &= ~PlayerInput::DIR_LEFT;
+				}
+				break;
+			case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+				if (pressed) {
+					_pi.dirMask |= PlayerInput::DIR_RIGHT;
+				} else {
+					_pi.dirMask &= ~PlayerInput::DIR_RIGHT;
+				}
+				break;
+			}
 		}
 		break;
 #else
@@ -638,8 +945,7 @@ void SystemStub_SDL::handleEvent(const SDL_Event &ev, bool &paused) {
 		} else if (ev.button.button == SDL_BUTTON_RIGHT) {
 			_pi.rightMouseButton = true;
 		}
-		_pi.mouseX = ev.button.x;
-		_pi.mouseY = ev.button.y;
+		updateMousePosition(ev.button.x, ev.button.y);
 		break;
 	case SDL_MOUSEBUTTONUP:
 		if (ev.button.button == SDL_BUTTON_LEFT) {
@@ -647,12 +953,10 @@ void SystemStub_SDL::handleEvent(const SDL_Event &ev, bool &paused) {
 		} else if (ev.button.button == SDL_BUTTON_RIGHT) {
 			_pi.rightMouseButton = false;
 		}
-		_pi.mouseX = ev.button.x;
-		_pi.mouseY = ev.button.y;
+		updateMousePosition(ev.button.x, ev.button.y);
 		break;
 	case SDL_MOUSEMOTION:
-		_pi.mouseX = ev.motion.x;
-		_pi.mouseY = ev.motion.y;
+		updateMousePosition(ev.motion.x, ev.motion.y);
 		break;
 #endif
 	default:

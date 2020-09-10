@@ -18,18 +18,24 @@ struct PlayerInput {
 		DIR_RIGHT = 1 << 3
 	};
 	uint8_t dirMask;
-	bool enter;
-	bool space;
-	bool shift;
-	bool ctrl;
-	bool tab;
-	bool escape;
+	bool enter; // use, current action
+	bool space; // take gun, shoot
+	bool shift; // put back gun, run
+	bool ctrl; // toggle status window
+	bool tab; // toggle bag window
+	bool escape; // quit
 	bool leftMouseButton, rightMouseButton;
 	int mouseX, mouseY;
 	bool save;
 	bool load;
 	int stateSlot;
 	bool fastMode;
+};
+
+enum {
+	SCREEN_MODE_DEFAULT,
+	SCREEN_MODE_4_3,
+	SCREEN_MODE_16_9
 };
 
 struct SystemStub {
@@ -40,7 +46,7 @@ struct SystemStub {
 
 	virtual ~SystemStub() {}
 
-	virtual void init(const char *title, int w, int h) = 0;
+	virtual void init(const char *title, int w, int h, bool fullscreen, int screenMode) = 0;
 	virtual void destroy() = 0;
 
 	virtual void setIcon(const uint8_t *data, int size) = 0;
@@ -50,6 +56,8 @@ struct SystemStub {
 	virtual void fillRect(int x, int y, int w, int h, uint8_t color) = 0;
 	virtual void copyRect(int x, int y, int w, int h, const uint8_t *buf, int pitch, bool transparent = false) = 0;
 	virtual void darkenRect(int x, int y, int w, int h) = 0;
+	virtual void copyRectWidescreen(int w, int h, const uint8_t *buf, int pitch) = 0;
+	virtual void clearWidescreen() = 0;
 	virtual void updateScreen() = 0;
 
 	virtual void setYUV(bool flag, int w, int h) = 0;

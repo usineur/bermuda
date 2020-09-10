@@ -67,7 +67,9 @@ target_link_libraries(${VITA_APPNAME}
   modplug
   FLAC
   z
+  SceAppMgr_stub
   SceAudio_stub
+  SceCommonDialog_stub
   SceCtrl_stub
   SceDisplay_stub
   SceGxm_stub

@@ -155,16 +155,6 @@ struct DialogueChoice {
 
 struct Game;
 
-struct GameConditionOpcode {
-	int num;
-	bool (Game::*pf)();
-};
-
-struct GameOperatorOpcode {
-	int num;
-	void (Game::*pf)();
-};
-
 enum {
 	kActionTake = 0,
 	kActionTalk = 1,
@@ -218,6 +208,10 @@ enum {
 	kOffsetBitmapPalette = kOffsetBitmapInfo + 40,
 	kOffsetBitmapBits = kOffsetBitmapPalette + 256 * 4,
 	kBitmapBufferDefaultSize = 40 + 256 * 4 + 640 * 480 + 256 * 4
+};
+
+enum {
+	kCheatNoHit = 1 << 0
 };
 
 static inline int getBitmapWidth(const uint8_t *p) {
@@ -305,14 +299,14 @@ struct Game {
 	void handleDialogue();
 
 	// game.cpp
+	void detectTextCp949();
 	void detectVersion();
 	void restart();
-	void init();
+	void init(bool fullscreen, int screenMode);
 	void fini();
 	void mainLoop();
 	void updateMouseButtonsPressed();
 	void updateKeysPressedTable();
-	void setupScreenPalette(const uint8_t *src);
 	void clearSceneData(int anim);
 	void reinitializeObject(int object);
 	void updateObjects();
@@ -348,8 +342,8 @@ struct Game {
 	void handleMenu();
 
 	// opcodes.cpp
-	const GameConditionOpcode *findConditionOpcode(int num) const;
-	const GameOperatorOpcode *findOperatorOpcode(int num) const;
+	bool executeConditionOpcode(int num);
+	void executeOperatorOpcode(int num);
 	void evalExpr(int16_t *val);
 	bool testExpr(int16_t val);
 	bool cop_true();
@@ -448,6 +442,7 @@ struct Game {
 	void loadSPR(const char *fileName, SceneAnimation *sa);
 	void loadMOV(const char *fileName);
 	void loadKBR(const char *fileName);
+	void loadTBM();
 
 	// saveload.cpp
 	void saveState(File *f, int slot);
@@ -458,6 +453,7 @@ struct Game {
 	void win16_stretchBits(SceneBitmap *bits, int srcHeight, int srcWidth, int srcY, int srcX, int dstHeight, int dstWidth, int dstY, int dstX);
 
 	int _nextState, _state;
+	bool _textCp949;
 	bool _isDemo;
 	const char *_startupScene;
 	FileSystem _fs;
@@ -467,6 +463,7 @@ struct Game {
 	const char *_dataPath;
 	const char *_savePath;
 	const char *_musicPath;
+	uint32_t _cheats;
 	int _stateSlot;
 	int _mixerSoundId;
 	int _mixerMusicId;
@@ -488,6 +485,9 @@ struct Game {
 	uint32_t _keyboardReplaySize;
 	uint32_t _keyboardReplayOffset;
 	uint8_t *_keyboardReplayData;
+
+	uint8_t *_hangulFontData;
+	uint32_t _hangulFontLutOffset;
 
 	// inventory
 	uint8_t *_lifeBarImageTable[11][12];
@@ -579,10 +579,6 @@ struct Game {
 	SceneObjectStatus _sceneObjectStatusTable[NUM_SCENE_OBJECT_STATUS];
 	int _sceneObjectStatusCount;
 
-	static const GameConditionOpcode _conditionOpTable[];
-	static const int _conditionOpCount;
-	static const GameOperatorOpcode _operatorOpTable[];
-	static const int _operatorOpCount;
 	static const uint16_t _fontData[];
 	static const uint8_t _fontCharWidth[];
 	static const uint8_t _bermudaIconBmpData[];

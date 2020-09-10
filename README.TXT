@@ -1,6 +1,6 @@
 
 Bermuda Syndrome README
-Release version: 0.1.6
+Release version: 0.1.7
 -------------------------------------------------------------------------------
 
 
@@ -28,6 +28,8 @@ The paths can be changed using command line switches :
   	--datapath=PATH    Path to data files (default 'DATA')
   	--savepath=PATH    Path to save files (default '.')
 	--musicpath=MUSIC  Path to music files (default 'MUSIC')
+	--fullscreen       Fullscreen display
+	--widescreen=MODE  Widescreen mode ('default', '4:3' or '16:9')
 
 Game hotkeys :
 
@@ -46,6 +48,10 @@ Other hotkeys:
 	-               decrease game state slot
 	F               enable fast mode
 	W               toggle fullscreen/windowed display
+
+For the Korean version, you need the 'BT16.TBM' file that is installed with
+Windows 3.x. The file is 330328 bytes long and should be copied in the same
+directory as the 'bs' executable.
 
 
 Contact:

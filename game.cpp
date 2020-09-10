@@ -4,6 +4,7 @@
  */
 
 #include <sys/param.h>
+#include <unistd.h>
 #include "avi_player.h"
 #include "decoder.h"
 #include "file.h"
@@ -17,17 +18,50 @@ static const char *kGameWindowTitleDemo = "Bermuda Syndrome Demo";
 
 static const char *kGameStateFileNameFormat = "%s/bermuda.%03d";
 
-static const bool kCheatNoHit = false;
-
 Game::Game(SystemStub *stub, const char *dataPath, const char *savePath, const char *musicPath)
 	: _fs(dataPath), _stub(stub), _dataPath(dataPath), _savePath(savePath), _musicPath(musicPath) {
 	_state = _nextState = -1;
 	_mixer = _stub->getMixer();
 	_stateSlot = 1;
+	_cheats = 0;
 	detectVersion();
+	detectTextCp949();
+	if (_textCp949) {
+		loadTBM();
+	}
 }
 
 Game::~Game() {
+}
+
+void Game::detectTextCp949() {
+	static const char *name = "..\\TEXT\\02_0.DLG";
+	FileHolder fp(_fs, name);
+	int count = 0;
+	while (true) {
+		uint8_t code1 = fp->readByte();
+		if (fp->ioErr()) {
+			break;
+		}
+		// https://en.wikipedia.org/wiki/Unified_Hangul_Code
+		if (code1 >= 0x81 && code1 <= 0xFE) {
+			uint8_t code2 = fp->readByte();
+			if (code1 <= 0xC6) {
+				if ((code2 >= 0x41 && code2 <= 0x5A) || (code2 >= 0x61 && code2 <= 0x7A) || (code2 >= 0x81 && code2 <= 0xFE)) {
+					++count;
+					continue;
+				}
+			}
+			if (code1 >= 0xA1) {
+				if (code2 >= 0xA1 && code2 <= 0xFE) {
+					++count;
+					continue;
+				}
+			}
+		}
+	}
+	const int rate = count * 100 / fp->tell();
+	_textCp949 = (rate > 10);
 }
 
 void Game::detectVersion() {
@@ -62,6 +96,7 @@ void Game::restart() {
 
 	_lastDialogueEndedId = 0;
 	_dialogueEndedFlag = 0;
+	_loadDialogueDataState = 0;
 
 	memset(_defaultVarsTable, 0, sizeof(_defaultVarsTable));
 	memset(_varsTable, 0, sizeof(_varsTable));
@@ -121,7 +156,7 @@ void Game::restart() {
 	_keyboardReplayData = 0;
 }
 
-void Game::init() {
+void Game::init(bool fullscreen, int screenMode) {
 	const char *caption = kGameWindowTitle;
 	if (_isDemo) {
 		_stub->setIcon(_bermudaDemoBmpData, _bermudaDemoBmpSize);
@@ -129,7 +164,7 @@ void Game::init() {
 	} else {
 		_stub->setIcon(_bermudaIconBmpData, _bermudaIconBmpSize);
 	}
-	_stub->init(caption, kGameScreenWidth, kGameScreenHeight);
+	_stub->init(caption, kGameScreenWidth, kGameScreenHeight, fullscreen, screenMode);
 	allocateTables();
 	loadCommonSprites();
 	restart();
@@ -228,7 +263,8 @@ void Game::mainLoop() {
 				}
 			}
 			if (_loadDataState != 0) {
-				setupScreenPalette(_bitmapBuffer0 + kOffsetBitmapPalette);
+				_stub->setPalette(_bitmapBuffer0 + kOffsetBitmapPalette, 256);
+				_stub->copyRectWidescreen(kGameScreenWidth, kGameScreenHeight, _bitmapBuffer1.bits, _bitmapBuffer1.pitch);
 			}
 			_gameOver = false;
 			_workaroundRaftFlySceneBug = strncmp(_currentSceneScn, "FLY", 3) == 0;
@@ -380,10 +416,6 @@ void Game::updateKeysPressedTable() {
 			restart();
 		}
 	}
-}
-
-void Game::setupScreenPalette(const uint8_t *src) {
-	_stub->setPalette(src, 256);
 }
 
 void Game::clearSceneData(int anim) {
@@ -547,11 +579,7 @@ void Game::runObjectsScript() {
 					if (op == 0) {
 						break;
 					}
-					const GameConditionOpcode *cop = findConditionOpcode(op);
-					if (!cop) {
-						error("Invalid condition %d", op);
-					}
-					loop = (this->*(cop->pf))();
+					loop = executeConditionOpcode(op);
 				}
 				if (loop) {
 					while (_objectScript.dataOffset < endOfStatementDataOffset) {
@@ -561,11 +589,7 @@ void Game::runObjectsScript() {
 							endOfStatementDataOffset = _objectScript.dataOffset = endOfDataOffset;
 							break;
 						}
-						const GameOperatorOpcode *oop = findOperatorOpcode(op);
-						if (!oop) {
-							error("Invalid operator %d", op);
-						}
-						(this->*(oop->pf))();
+						executeOperatorOpcode(op);
 					}
 				}
 				_objectScript.dataOffset = endOfStatementDataOffset;
@@ -595,7 +619,7 @@ void Game::runObjectsScript() {
 		for (int i = 0; i < _sceneObjectsCount; ++i) {
 			reinitializeObject(i);
 		}
-		if (kCheatNoHit) {
+		if (_cheats & kCheatNoHit) {
 			_varsTable[0] = 0;
 		}
 		if (_varsTable[0] >= 10 && !_gameOver) {
@@ -1060,6 +1084,7 @@ void Game::playVideo(const char *name) {
 		File f;
 		if (f.open(filePath)) {
 			_stub->fillRect(0, 0, kGameScreenWidth, kGameScreenHeight, 0);
+			_stub->clearWidescreen();
 			_stub->updateScreen();
 			AVI_Player player(_mixer, _stub);
 			player.play(&f);
@@ -1074,6 +1099,7 @@ void Game::displayTitleBitmap() {
 	playMusic("..\\midi\\title.mid");
 	_stub->setPalette(_bitmapBuffer0 + kOffsetBitmapPalette, 256);
 	_stub->copyRect(0, 0, kGameScreenWidth, kGameScreenHeight, _bitmapBuffer1.bits, _bitmapBuffer1.pitch);
+	_stub->copyRectWidescreen(kGameScreenWidth, kGameScreenHeight, _bitmapBuffer1.bits, _bitmapBuffer1.pitch);
 }
 
 void Game::stopMusic() {
@@ -1109,7 +1135,7 @@ void Game::playMusic(const char *name) {
 	stopMusic();
 	for (unsigned int i = 0; i < ARRAYSIZE(_midiMapping); ++i) {
 		if (strcasecmp(_midiMapping[i].fileName, name + 8) == 0) {
-			char filePath[512];
+			char filePath[MAXPATHLEN];
 			snprintf(filePath, sizeof(filePath), "%s/track%02d.ogg", _musicPath, _midiMapping[i].digitalTrack);
 			debug(DBG_GAME, "playMusic('%s') track %s", name, filePath);
 			File *f = new File;
@@ -1148,13 +1174,6 @@ void Game::changeObjectMotionFrame(int object, int object2, int useObject2, int 
 				x -= _sceneObjectFramesTable[so->frameNum].hdr.xPos;
 			}
 			so->x = x + _sceneObjectFramesTable[so->frameNumPrev].hdr.w - _sceneObjectFramesTable[so->frameNum].hdr.w;
-/*			int y = so->yPrev - _sceneObjectFramesTable[so->frameNumPrev].hdr.yPos;
-			if (useDy) {
-				y += dy;
-			} else {
-				y += _sceneObjectFramesTable[so->frameNum].hdr.yPos;
-			}
-			so->y = y;*/
 		} else {
 			int x = so->xPrev - _sceneObjectFramesTable[so->frameNumPrev].hdr.xPos;
 			if (useDx) {
@@ -1163,13 +1182,6 @@ void Game::changeObjectMotionFrame(int object, int object2, int useObject2, int 
 				x += _sceneObjectFramesTable[so->frameNum].hdr.xPos;
 			}
 			so->x = x;
-/*			int y = so->yPrev - _sceneObjectFramesTable[so->frameNumPrev].hdr.yPos;
-			if (useDy) {
-				y += dy;
-			} else {
-				y += _sceneObjectFramesTable[so->frameNum].hdr.yPos;
-			}
-			so->y = y;*/
 		}
 		int y = so->yPrev - _sceneObjectFramesTable[so->frameNumPrev].hdr.yPos;
 		if (useDy) {

@@ -21,17 +21,19 @@ int _newlib_heap_size_user = 192 * 1024 * 1024;
 static const char *USAGE =
 	"Bermuda Syndrome\n"
 	"Usage: bs [OPTIONS]...\n"
-	"  --datapath=PATH   Path to data files (default 'DATA')\n"
-	"  --savepath=PATH   Path to save files (default '.')\n"
-	"  --musicpath=PATH  Path to music files (default 'MUSIC')\n";
+	"  --datapath=PATH    Path to data files (default 'DATA')\n"
+	"  --savepath=PATH    Path to save files (default '.')\n"
+	"  --musicpath=PATH   Path to music files (default 'MUSIC')\n"
+	"  --fullscreen       Fullscreen display\n"
+	"  --widescreen=MODE  Widescreen mode ('default', '4:3' or '16:9')\n";
 
 static Game *g_game;
 static SystemStub *g_stub;
 
-static void init(const char *dataPath, const char *savePath, const char *musicPath) {
+static void init(const char *dataPath, const char *savePath, const char *musicPath, bool fullscreen, int screenMode) {
 	g_stub = SystemStub_SDL_create();
 	g_game = new Game(g_stub, dataPath ? dataPath : "DATA", savePath ? savePath : ".", musicPath ? musicPath : "MUSIC");
-	g_game->init();
+	g_game->init(fullscreen, screenMode);
 }
 
 static void fini() {
@@ -63,24 +65,31 @@ int main(int argc, char *argv[]) {
 	const char *dataPath = "ux0:data/bermuda/DATA";
 	const char *savePath = "ux0:data/bermuda/SAVE";
 	const char *musicPath = "app0:MUSIC";
+	bool fullscreen = false;
+	int graphicsScale = 1;
+	int screenMode = SCREEN_MODE_4_3;
 #else
 	char *dataPath = 0;
 	char *savePath = 0;
 	char *musicPath = 0;
+	bool fullscreen = false;
+	int screenMode = SCREEN_MODE_DEFAULT;
 #endif
 	if (argc == 2) {
 		// data path as the only command line argument
 		struct stat st;
-		if (stat(argv[1], &st) == 0 && S_ISDIR(st.st_mode)) {
+		if (stat(argv[1], &st) == 0 && (S_ISDIR(st.st_mode) || S_ISREG(st.st_mode))) {
 			dataPath = strdup(argv[1]);
 		}
 	}
 	while (1) {
 		static struct option options[] = {
-			{ "datapath",  required_argument, 0, 'd' },
-			{ "savepath",  required_argument, 0, 's' },
-			{ "musicpath", required_argument, 0, 'm' },
-			{ "help",      no_argument,       0, 'h' },
+			{ "datapath",   required_argument, 0, 1 },
+			{ "savepath",   required_argument, 0, 2 },
+			{ "musicpath",  required_argument, 0, 3 },
+			{ "fullscreen", no_argument,       0, 4 },
+			{ "widescreen", required_argument, 0, 5 },
+			{ "help",       no_argument,       0, 0 },
 			{ 0, 0, 0, 0 }
 		};
 		int index;
@@ -89,14 +98,35 @@ int main(int argc, char *argv[]) {
 			break;
 		}
 		switch (c) {
-		case 'd':
+		case 1:
 			dataPath = strdup(optarg);
 			break;
-		case 's':
+		case 2:
 			savePath = strdup(optarg);
 			break;
-		case 'm':
+		case 3:
 			musicPath = strdup(optarg);
+			break;
+		case 4:
+			fullscreen = true;
+			break;
+		case 5: {
+				static const struct {
+					const char *name;
+					int mode;
+				} modes[] = {
+					{ "default", SCREEN_MODE_DEFAULT },
+					{ "4:3",  SCREEN_MODE_4_3 },
+					{ "16:9", SCREEN_MODE_16_9 },
+					{ 0, -1 }
+				};
+				for (int i = 0; modes[i].name; ++i) {
+					if (strcmp(modes[i].name, optarg) == 0) {
+						screenMode = modes[i].mode;
+						break;
+					}
+				}
+			}
 			break;
 		default:
 			fprintf(stdout, "%s", USAGE);
@@ -104,15 +134,9 @@ int main(int argc, char *argv[]) {
 		}
 	}
 	g_debugMask = DBG_INFO; // | DBG_GAME | DBG_OPCODES | DBG_DIALOGUE;
-	init(dataPath, savePath, musicPath);
+	init(dataPath, savePath, musicPath, fullscreen, screenMode);
 #ifdef __EMSCRIPTEN__
 	emscripten_set_main_loop(mainLoop, kCycleDelay, 0);
-#elif __vita__
-	while (!g_stub->_quit) {
-		g_game->mainLoop();
-		g_stub->processEvents();
-	}
-	fini();
 #else
 	uint32_t lastFrameTimeStamp = g_stub->getTimeStamp();
 	while (!g_stub->_quit) {
