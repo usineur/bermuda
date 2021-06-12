@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.0)
 
 if( NOT DEFINED CMAKE_TOOLCHAIN_FILE )
-  set(CMAKE_TOOLCHAIN_FILE "Toolchain.cmake" CACHE PATH "Toolchain file")
+  set(CMAKE_TOOLCHAIN_FILE "/opt/devkitpro/cmake/Switch.cmake" CACHE PATH "Toolchain file")
 endif()
 
 project(bs)
@@ -9,6 +9,7 @@ project(bs)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__SWITCH__ -DBERMUDA_POSIX -DBERMUDA_VORBIS -DBERMUDA_ZLIB -O3 -g")
 
 include_directories(
+  ${DEVKITPRO}/portlibs/switch/include
   ${DEVKITPRO}/portlibs/switch/include/SDL2
 )
 
@@ -45,7 +46,6 @@ target_link_libraries(${CMAKE_PROJECT_NAME}.elf
   z
   nx
   m
- -specs=${DEVKITPRO}/libnx/switch.specs
 )
 
 add_custom_target(${CMAKE_PROJECT_NAME}.nro

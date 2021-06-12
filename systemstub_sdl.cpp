@@ -82,6 +82,7 @@ struct SystemStub_SDL : SystemStub {
 		_iconData(0), _iconSize(0) {
 		_screenshot = 1;
 		_mixer = Mixer_SDL_create(this);
+		delay = 0;
 	}
 	virtual ~SystemStub_SDL() {
 		delete _mixer;
